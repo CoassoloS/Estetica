@@ -3,7 +3,7 @@ test_model3d.py — Tests del cliente de modelos 3D en fal.ai (API mockeada).
 
 Verifica:
     - Cola de fal.ai: envío, consulta de estado con espera creciente y resultado
-    - Endpoints y payloads de TRELLIS (una o varias vistas) y Hunyuan3D
+    - Endpoints y payloads de Rodin V2.5, Hunyuan3D 3.1 Pro y TRELLIS
     - Manejo de 429, errores del modelo y salidas sin archivo 3D
     - Caché en disco: no se vuelve a llamar a la API con las mismas fotos
 """
@@ -47,10 +47,10 @@ def trellis_output():
     return response(200, {"model_mesh": {"url": "https://fal.media/files/model.glb"}, "timings": {}})
 
 
-def make_client(tmp_path, **kwargs):
+def make_client(tmp_path, model_key="trellis", **kwargs):
     sleeps: list[float] = []
-    client = FalClient(api_key="key", cache_dir=tmp_path, sleep=sleeps.append,
-                       clock=lambda: 0.0, **kwargs)
+    client = FalClient(api_key="key", model_key=model_key, cache_dir=tmp_path,
+                       sleep=sleeps.append, clock=lambda: 0.0, **kwargs)
     return client, sleeps
 
 
@@ -96,16 +96,30 @@ class TestGenerate:
         assert req.call_args_list[0].args[1].endswith("/fal-ai/trellis")
         assert "image_url" in req.call_args_list[0].kwargs["json"]
 
-    def test_hunyuan_uses_only_frontal(self, tmp_path):
-        client, _ = make_client(tmp_path, model_key="hunyuan")
+    def test_rodin_sends_all_views_as_glb(self, tmp_path):
+        client, _ = make_client(tmp_path, model_key="rodin")
+        output = response(200, {"model_mesh": {"url": "https://fal.media/files/r.glb"}, "textures": []})
+        with patch("simulation.model3d.requests.request",
+                   side_effect=[SUBMITTED, COMPLETED, output]) as req, \
+             patch("simulation.model3d.requests.get", return_value=response(200, content=GLB_BYTES)) as get:
+            client.generate([image(), image(90)])
+
+        assert req.call_args_list[0].args[1].endswith("/fal-ai/hyper3d/rodin/v2.5")
+        payload = req.call_args_list[0].kwargs["json"]
+        assert len(payload["image_urls"]) == 2
+        assert payload["geometry_file_format"] == "glb" and payload["material"] == "PBR"
+        assert get.call_args.args[0] == "https://fal.media/files/r.glb"
+
+    def test_hunyuan_pro_uses_only_frontal(self, tmp_path):
+        client, _ = make_client(tmp_path, model_key="hunyuan_pro")
         output = response(200, {"model_glb": {"url": "https://fal.media/files/h.glb"}})
         with patch("simulation.model3d.requests.request",
                    side_effect=[SUBMITTED, COMPLETED, output]) as req, \
              patch("simulation.model3d.requests.get", return_value=response(200, content=GLB_BYTES)) as get:
             client.generate([image(), image(90)])
 
-        assert req.call_args_list[0].args[1].endswith("/fal-ai/hunyuan-3d/v3.1/rapid/image-to-3d")
-        assert set(req.call_args_list[0].kwargs["json"]) == {"input_image_url"}
+        assert req.call_args_list[0].args[1].endswith("/fal-ai/hunyuan-3d/v3.1/pro/image-to-3d")
+        assert set(req.call_args_list[0].kwargs["json"]) == {"input_image_url", "enable_pbr"}
         assert get.call_args.args[0] == "https://fal.media/files/h.glb"
         # La foto lateral no cambia el caché: el modelo solo usa la frontal
         assert client.is_cached([image()]) and client.is_cached([image(), image(10)])
@@ -118,16 +132,17 @@ class TestGenerate:
             client.generate([image()])
 
         assert client.is_cached([image()]) and not client.is_cached([image(10)])
-        keyless = FalClient(api_key="", cache_dir=tmp_path)
+        keyless = FalClient(api_key="", model_key="trellis", cache_dir=tmp_path)
         with patch("simulation.model3d.requests.request") as req:
             result = keyless.generate([image()])
         req.assert_not_called()
         assert result.from_cache and result.glb == GLB_BYTES
 
     def test_model_is_part_of_cache_key(self, tmp_path):
-        trellis = FalClient(api_key="k", cache_dir=tmp_path)
-        hunyuan = FalClient(api_key="k", model_key="hunyuan", cache_dir=tmp_path)
-        assert trellis._cache_path([b"a"]) != hunyuan._cache_path([b"a"])
+        rodin = FalClient(api_key="k", cache_dir=tmp_path)
+        trellis = FalClient(api_key="k", model_key="trellis", cache_dir=tmp_path)
+        assert rodin.model_key == "rodin"
+        assert rodin._cache_path([b"a"]) != trellis._cache_path([b"a"])
 
 
 class TestErrors:

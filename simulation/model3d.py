@@ -2,10 +2,11 @@
 simulation/model3d.py — Cabeza 3D completa con modelos generativos en fal.ai.
 
 Genera un modelo 3D completo (nuca, pelo, orejas) a partir de fotos, con
-modelos open source servidos por fal.ai con pago por uso:
+modelos servidos por fal.ai con pago por uso:
 
+    - Rodin V2.5 (Hyper3D): máxima calidad y realismo; acepta varias vistas.
+    - Hunyuan3D 3.1 Pro (Tencent): alta calidad; usa la foto frontal.
     - TRELLIS (Microsoft): rápido y muy barato; acepta varias vistas.
-    - Hunyuan3D 3.1 Rapid (Tencent): más detalle; usa la foto frontal.
 
 La geometría es generativa: sirve para mostrar al paciente, no para medir.
 
@@ -40,7 +41,7 @@ DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent / "model3d_cache"
 
 POLL_INITIAL_S = 2.0
 POLL_MAX_S = 10.0
-DEADLINE_S = 10 * 60
+DEADLINE_S = 20 * 60
 
 
 class Model3DError(RuntimeError):
@@ -51,39 +52,56 @@ class Model3DError(RuntimeError):
 class FalModel:
     key: str
     label: str
-    single_endpoint: str
-    multi_endpoint: Optional[str]       # None: solo usa la primera foto
+    endpoint: str
+    max_images: int                     # Fotos que usa (la primera es la frontal)
     output_field: str                   # Campo de la salida con el archivo .glb
+    multi_endpoint: Optional[str] = None  # Endpoint alternativo cuando hay varias fotos
 
     def request(self, image_urls: list[str]) -> tuple[str, dict]:
         """Endpoint y payload para las fotos dadas (data URLs)."""
-        if self.key == "trellis":
-            if len(image_urls) > 1 and self.multi_endpoint:
-                return self.multi_endpoint, {"image_urls": image_urls}
-            return self.single_endpoint, {"image_url": image_urls[0]}
-        return self.single_endpoint, {"input_image_url": image_urls[0]}
+        urls = image_urls[:self.max_images]
+        if self.key == "rodin":
+            return self.endpoint, {
+                "image_urls": urls,
+                "tier": "High",
+                "material": "PBR",
+                "geometry_file_format": "glb",
+            }
+        if self.key == "hunyuan_pro":
+            return self.endpoint, {"input_image_url": urls[0], "enable_pbr": True}
+        if len(urls) > 1 and self.multi_endpoint:
+            return self.multi_endpoint, {"image_urls": urls}
+        return self.endpoint, {"image_url": urls[0]}
 
     def images_used(self, count: int) -> int:
-        return count if self.multi_endpoint else 1
+        return min(count, self.max_images)
 
 
 FAL_MODELS: dict[str, FalModel] = {
+    "rodin": FalModel(
+        key="rodin",
+        label="Rodin V2.5 — máxima calidad (≈ US$ 0,40 por modelo)",
+        endpoint="fal-ai/hyper3d/rodin/v2.5",
+        max_images=5,
+        output_field="model_mesh",
+    ),
+    "hunyuan_pro": FalModel(
+        key="hunyuan_pro",
+        label="Hunyuan3D 3.1 Pro — alta calidad (≈ US$ 0,38 por modelo)",
+        endpoint="fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+        max_images=1,
+        output_field="model_glb",
+    ),
     "trellis": FalModel(
         key="trellis",
         label="TRELLIS — rápido y económico (≈ US$ 0,02 por modelo)",
-        single_endpoint="fal-ai/trellis",
-        multi_endpoint="fal-ai/trellis/multi",
+        endpoint="fal-ai/trellis",
+        max_images=5,
         output_field="model_mesh",
-    ),
-    "hunyuan": FalModel(
-        key="hunyuan",
-        label="Hunyuan3D 3.1 Rapid — más detalle (≈ US$ 0,23 por modelo)",
-        single_endpoint="fal-ai/hunyuan-3d/v3.1/rapid/image-to-3d",
-        multi_endpoint=None,
-        output_field="model_glb",
+        multi_endpoint="fal-ai/trellis/multi",
     ),
 }
-DEFAULT_MODEL_KEY = "trellis"
+DEFAULT_MODEL_KEY = "rodin"
 
 
 @dataclass
@@ -174,7 +192,7 @@ class FalClient:
                 state = "Generating" if status == "IN_PROGRESS" else "Waiting"
                 on_progress(state, body.get("queue_position"))
             if self.clock() + delay > deadline:
-                raise Model3DError("La generación tardó más de 10 minutos. Reintentá más tarde.")
+                raise Model3DError("La generación tardó más de 20 minutos. Reintentá más tarde.")
             delay = min(delay * 1.5, POLL_MAX_S)
 
     def _download_glb(self, output: dict) -> bytes:

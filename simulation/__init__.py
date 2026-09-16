@@ -7,7 +7,7 @@ Pipeline híbrido:
     3. Warp piecewise-affine de la foto (`warp`) + re-medición (`pipeline`)
     4. Visor 3D antes/después (`viewer3d`)
     5. Refinado fotorrealista opcional vía OpenRouter (`ai_refine`)
-    6. Cabeza 3D completa generativa con fal.ai: TRELLIS / Hunyuan3D (`model3d`, `viewer_glb`)
+    6. Cabeza 3D completa generativa con fal.ai: Rodin / Hunyuan3D / TRELLIS (`model3d`, `viewer_glb`)
 
 Autor: FacialMetrics Pro
 """

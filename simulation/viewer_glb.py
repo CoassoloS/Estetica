@@ -1,7 +1,7 @@
 """
 simulation/viewer_glb.py — Visor 3D de modelos GLB (fal.ai) antes/después.
 
-Muestra la cabeza completa generada con TRELLIS / Hunyuan3D con giro libre de 360°,
+Muestra la cabeza completa generada en fal.ai con giro libre de 360°,
 iluminación de estudio y botones para alternar Antes / Después.
 
 Autor: FacialMetrics Pro

@@ -20,7 +20,7 @@ El sistema procesa fotos médicas estandarizadas (frontal en reposo, frontal en 
 | Procesamiento de imagen | OpenCV, MediaPipe, NumPy, Pillow |
 | Cálculos científicos | SciPy (Delaunay) |
 | Visor 3D | three.js (CDN) |
-| IA generativa (opcional) | OpenRouter (modelos de imagen), fal.ai: TRELLIS / Hunyuan3D (modelos 3D) |
+| IA generativa (opcional) | OpenRouter (modelos de imagen), fal.ai: Rodin V2.5 / Hunyuan3D Pro / TRELLIS (modelos 3D) |
 | Frontend | Streamlit |
 | Reportes PDF | ReportLab |
 | Lenguaje | Python 3.10+ |
@@ -41,7 +41,7 @@ Estetica/
 │   ├── pipeline.py        #   Simulación + re-medición
 │   ├── viewer3d.py        #   Visor 3D antes/después (three.js)
 │   ├── ai_refine.py       #   Refinado con IA (OpenRouter) + verificación
-│   ├── model3d.py         #   Cabeza 3D completa con fal.ai (TRELLIS / Hunyuan3D)
+│   ├── model3d.py         #   Cabeza 3D completa con fal.ai (Rodin / Hunyuan3D / TRELLIS)
 │   └── viewer_glb.py      #   Visor 3D de modelos GLB antes/después
 ├── requirements.txt       # Dependencias
 ├── README.md              # Este archivo
