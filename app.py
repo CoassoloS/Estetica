@@ -56,13 +56,18 @@ from drawer import (
 from report import generate_pdf_report
 from simulation import (
     DEFAULT_MODEL,
+    DEFAULT_MODEL_KEY,
     DENTAL_OPTIONS,
+    FAL_MODELS,
     PRESETS,
     PROCEDURES,
     FaceMesh3D,
+    FalClient,
+    Model3DError,
     OpenRouterBackend,
     RefineError,
     active_changes,
+    build_glb_viewer_html,
     build_prompt,
     build_viewer_html,
     default_values,
@@ -228,11 +233,12 @@ def cached_image_models(api_key: str) -> list[str]:
     return list_image_models(api_key)
 
 
-def openrouter_default_key() -> str:
+def default_secret(name: str) -> str:
+    """Valor de `.streamlit/secrets.toml` o, si no está, de la variable de entorno."""
     try:
-        return st.secrets.get("OPENROUTER_API_KEY", "") or os.environ.get("OPENROUTER_API_KEY", "")
+        return st.secrets.get(name, "") or os.environ.get(name, "")
     except Exception:  # Sin secrets.toml
-        return os.environ.get("OPENROUTER_API_KEY", "")
+        return os.environ.get(name, "")
 
 
 def create_metric_card(label: str, value: str, sub: str = "") -> str:
@@ -281,6 +287,8 @@ if "simulation_report" not in st.session_state:
     st.session_state.simulation_report = None
 if "sim_ai" not in st.session_state:
     st.session_state.sim_ai = None
+if "head_models" not in st.session_state:
+    st.session_state.head_models = {}
 for _pid, _value in default_values().items():
     st.session_state.setdefault(f"sim_{_pid}", _value)
 
@@ -320,7 +328,7 @@ with st.sidebar:
     st.markdown("### 🤖 IA generativa (OpenRouter)")
     openrouter_key = st.text_input(
         "API key",
-        value=openrouter_default_key(),
+        value=default_secret("OPENROUTER_API_KEY"),
         type="password",
         help="Se usa solo en esta sesión. También se lee de OPENROUTER_API_KEY "
              "(variable de entorno o .streamlit/secrets.toml).",
@@ -336,6 +344,22 @@ with st.sidebar:
     custom_model = st.text_input("Otro modelo (id)", placeholder="proveedor/modelo")
     if custom_model.strip():
         openrouter_model = custom_model.strip()
+
+    st.divider()
+    st.markdown("### 🗿 Modelo 3D completo (fal.ai)")
+    fal_key = st.text_input(
+        "API key de fal.ai",
+        value=default_secret("FAL_KEY"),
+        type="password",
+        help="Se usa solo en esta sesión. También se lee de FAL_KEY "
+             "(variable de entorno o .streamlit/secrets.toml).",
+    )
+    fal_model_key = st.selectbox(
+        "Modelo 3D",
+        list(FAL_MODELS),
+        index=list(FAL_MODELS).index(DEFAULT_MODEL_KEY),
+        format_func=lambda k: FAL_MODELS[k].label,
+    )
 
     st.divider()
     st.markdown(
@@ -1015,6 +1039,103 @@ with tab_simulation:
                         f"{v.mean_error_mm:.2f} mm, máx. {v.max_error_mm:.1f} mm). "
                         "Reintentá o usá la simulación geométrica."
                     )
+
+            # ── Cabeza 3D completa (fal.ai) ──────────────────────────────
+            st.divider()
+            st.markdown("#### 🗿 Cabeza 3D completa con IA")
+            head_model = FAL_MODELS[fal_model_key]
+            st.caption(
+                f"{head_model.label.split(' — ')[0]} genera la cabeza completa (nuca, pelo, "
+                "orejas) con giro de 360°. La geometría es generativa: sirve para mostrar, no "
+                "para medir. Cada modelo se cobra en fal.ai y queda guardado: no se vuelve a "
+                "cobrar si las fotos no cambian."
+            )
+
+            before_images = [sim_image]
+            if "profile_img" in st.session_state:
+                before_images.append(st.session_state.profile_img)
+            before_images = before_images[:head_model.images_used(len(before_images))]
+            after_images = [sim_ai["image"] if ai_current else outcome.image]
+            after_source = "refinado con IA" if ai_current else "simulación geométrica"
+            head_client = FalClient(api_key=fal_key, model_key=fal_model_key)
+            head_requests = {
+                "before": (before_images, "antes"),
+                "after": (after_images, "después"),
+            }
+
+            head_consent = st.checkbox(
+                "El consentimiento del paciente cubre el envío de sus fotos a fal.ai.",
+                key="head_consent",
+            )
+            if not fal_key:
+                st.caption("Ingresá la API key de fal.ai en la barra lateral.")
+
+            col_r1, col_r2 = st.columns(2)
+            clicked = {}
+            with col_r1:
+                st.caption("Antes: foto base" + (" + perfil lateral" if len(before_images) > 1 else ""))
+                clicked["before"] = st.button(
+                    "🗿 Generar 3D — Antes",
+                    disabled=not head_consent or not (fal_key or head_client.is_cached(before_images)),
+                )
+            with col_r2:
+                st.caption(f"Después: {after_source}")
+                clicked["after"] = st.button(
+                    "🗿 Generar 3D — Después",
+                    disabled=not (changes or dental_choice) or not head_consent
+                    or not (fal_key or head_client.is_cached(after_images)),
+                )
+
+            def head_request_key(images: list[np.ndarray]) -> str:
+                return json.dumps([fal_model_key] + [image_digest(img) for img in images])
+
+            for name, was_clicked in clicked.items():
+                if not was_clicked:
+                    continue
+                images, label = head_requests[name]
+                with st.status(f"Generando modelo 3D ({label})...", expanded=True) as head_status:
+                    def report_progress(state: str, queue: Optional[int]) -> None:
+                        detail = "en cola" if state == "Waiting" else "generando"
+                        if queue:
+                            detail += f" ({queue} por delante)"
+                        head_status.update(label=f"Modelo 3D ({label}): {detail}...")
+
+                    try:
+                        result = head_client.generate(images, on_progress=report_progress)
+                        st.session_state.head_models[name] = {
+                            "key": head_request_key(images),
+                            "glb": result.glb,
+                        }
+                        origin = " — recuperado del caché" if result.from_cache else ""
+                        head_status.update(label=f"✅ Modelo 3D ({label}) listo{origin}", state="complete")
+                    except Model3DError as e:
+                        head_status.update(label=f"❌ {e}", state="error")
+
+            current_models = {
+                name: model["glb"]
+                for name, model in st.session_state.head_models.items()
+                if model["key"] == head_request_key(head_requests[name][0])
+            }
+            stale = set(st.session_state.head_models) - set(current_models)
+            if stale:
+                st.info("ℹ️ Cambiaron las fotos, la simulación o el modelo: generá de nuevo el modelo 3D "
+                        + " y ".join(head_requests[n][1] for n in head_requests if n in stale) + ".")
+
+            if current_models:
+                st.iframe(
+                    build_glb_viewer_html(current_models.get("before"), current_models.get("after")),
+                    height=570,
+                )
+                col_d1, col_d2 = st.columns(2)
+                for col, name in ((col_d1, "before"), (col_d2, "after")):
+                    if name in current_models:
+                        with col:
+                            st.download_button(
+                                f"⬇️ Descargar GLB ({head_requests[name][1]})",
+                                data=current_models[name],
+                                file_name=f"cabeza_3d_{head_requests[name][1]}.glb",
+                                mime="model/gltf-binary",
+                            )
 
             # ── Resultado para el reporte ────────────────────────────────
             if changes or dental_choice:

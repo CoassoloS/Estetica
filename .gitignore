@@ -10,3 +10,6 @@ __pycache__/
 # Secretos (API keys)
 .env
 .streamlit/secrets.toml
+
+# Modelos 3D generados (contienen datos de pacientes)
+model3d_cache/

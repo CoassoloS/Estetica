@@ -20,7 +20,7 @@ El sistema procesa fotos médicas estandarizadas (frontal en reposo, frontal en 
 | Procesamiento de imagen | OpenCV, MediaPipe, NumPy, Pillow |
 | Cálculos científicos | SciPy (Delaunay) |
 | Visor 3D | three.js (CDN) |
-| IA generativa (opcional) | OpenRouter (modelos de imagen) |
+| IA generativa (opcional) | OpenRouter (modelos de imagen), fal.ai: TRELLIS / Hunyuan3D (modelos 3D) |
 | Frontend | Streamlit |
 | Reportes PDF | ReportLab |
 | Lenguaje | Python 3.10+ |
@@ -40,7 +40,9 @@ Estetica/
 │   ├── warp.py            #   Warp piecewise-affine de la foto
 │   ├── pipeline.py        #   Simulación + re-medición
 │   ├── viewer3d.py        #   Visor 3D antes/después (three.js)
-│   └── ai_refine.py       #   Refinado con IA (OpenRouter) + verificación
+│   ├── ai_refine.py       #   Refinado con IA (OpenRouter) + verificación
+│   ├── model3d.py         #   Cabeza 3D completa con fal.ai (TRELLIS / Hunyuan3D)
+│   └── viewer_glb.py      #   Visor 3D de modelos GLB antes/después
 ├── requirements.txt       # Dependencias
 ├── README.md              # Este archivo
 └── tests/
@@ -81,6 +83,10 @@ Para el refinado fotorrealista, definí la API key de una de estas formas
 export OPENROUTER_API_KEY=sk-or-...
 # o en .streamlit/secrets.toml:  OPENROUTER_API_KEY = "sk-or-..."
 ```
+
+Para la cabeza 3D completa, lo mismo con `FAL_KEY` (generada en fal.ai, pago
+por uso). Los modelos generados se guardan en `model3d_cache/` (fuera de git)
+y no se vuelven a cobrar si las fotos no cambian.
 
 ### 5. Ejecutar tests
 
