@@ -17,7 +17,9 @@ Autor: FacialMetrics Pro
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from io import BytesIO
 from typing import Optional
 
@@ -53,12 +55,22 @@ from drawer import (
 )
 from report import generate_pdf_report
 from simulation import (
-    MeshWarper,
-    SimulationConfig,
-    generate_nose_warp_points,
-    generate_chin_warp_points,
-    generate_lips_warp_points,
-    create_region_mask,
+    DEFAULT_MODEL,
+    DENTAL_OPTIONS,
+    PRESETS,
+    PROCEDURES,
+    FaceMesh3D,
+    OpenRouterBackend,
+    RefineError,
+    active_changes,
+    build_prompt,
+    build_viewer_html,
+    default_values,
+    describe_for_ai,
+    list_image_models,
+    param_id,
+    run_simulation,
+    verify_geometry,
 )
 
 
@@ -206,6 +218,23 @@ def img_to_rgb(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
+def image_digest(img: np.ndarray) -> str:
+    """Huella de una imagen, para invalidar resultados cacheados en sesión."""
+    return hashlib.md5(img.tobytes()).hexdigest()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_image_models(api_key: str) -> list[str]:
+    return list_image_models(api_key)
+
+
+def openrouter_default_key() -> str:
+    try:
+        return st.secrets.get("OPENROUTER_API_KEY", "") or os.environ.get("OPENROUTER_API_KEY", "")
+    except Exception:  # Sin secrets.toml
+        return os.environ.get("OPENROUTER_API_KEY", "")
+
+
 def create_metric_card(label: str, value: str, sub: str = "") -> str:
     """Crear HTML de tarjeta métrica."""
     return f"""
@@ -248,6 +277,12 @@ if "report_frontal" not in st.session_state:
     st.session_state.report_frontal = None
 if "report_profile" not in st.session_state:
     st.session_state.report_profile = None
+if "simulation_report" not in st.session_state:
+    st.session_state.simulation_report = None
+if "sim_ai" not in st.session_state:
+    st.session_state.sim_ai = None
+for _pid, _value in default_values().items():
+    st.session_state.setdefault(f"sim_{_pid}", _value)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -280,6 +315,27 @@ with st.sidebar:
         step=0.5,
         help="Distancia intercantal de referencia para calibración automática"
     )
+
+    st.divider()
+    st.markdown("### 🤖 IA generativa (OpenRouter)")
+    openrouter_key = st.text_input(
+        "API key",
+        value=openrouter_default_key(),
+        type="password",
+        help="Se usa solo en esta sesión. También se lee de OPENROUTER_API_KEY "
+             "(variable de entorno o .streamlit/secrets.toml).",
+    )
+    available_models = cached_image_models(openrouter_key) if openrouter_key else []
+    model_options = sorted(set(available_models) | {DEFAULT_MODEL})
+    openrouter_model = st.selectbox(
+        "Modelo de imagen",
+        model_options,
+        index=model_options.index(DEFAULT_MODEL),
+        help="Modelos de OpenRouter que generan imágenes a partir de imágenes.",
+    )
+    custom_model = st.text_input("Otro modelo (id)", placeholder="proveedor/modelo")
+    if custom_model.strip():
+        openrouter_model = custom_model.strip()
 
     st.divider()
     st.markdown(
@@ -581,19 +637,41 @@ with tab_analysis:
                 )
                 st.session_state.report_profile = report_p
 
+                # Controles de capas
+                col_pc1, col_pc2, col_pc3, col_pc4, col_pc5 = st.columns(5)
+                with col_pc1:
+                    show_landmarks_p = st.checkbox("🔵 Puntos anatómicos", value=True, key="profile_show_landmarks")
+                with col_pc2:
+                    show_thirds_p = st.checkbox("➖ Tercios faciales", value=True, key="profile_show_thirds")
+                with col_pc3:
+                    show_fifths_p = st.checkbox("| Quintos faciales", value=True, key="profile_show_fifths")
+                with col_pc4:
+                    show_midline_p = st.checkbox("📐 Línea media", value=True, key="profile_show_midline")
+                with col_pc5:
+                    show_profile_p = st.checkbox("📏 Proyecciones", value=True, key="profile_show_projections")
+
                 layers_p = {
-                    "landmarks": True,
-                    "thirds": False,
-                    "fifths": False,
-                    "midline": False,
-                    "profile": True,
+                    "landmarks": show_landmarks_p,
+                    "thirds": show_thirds_p,
+                    "fifths": show_fifths_p,
+                    "midline": show_midline_p,
+                    "profile": show_profile_p,
                     "alerts": False,
                 }
+
+                # Tercios, quintos y línea media solo para dibujar: no se suman al
+                # reporte de perfil (resultados, alertas y PDF no cambian)
+                overlay_p = run_full_analysis(
+                    st.session_state.landmarks_profile,
+                    st.session_state.calibration,
+                    view_type="frontal",
+                )
+                overlay_p.profile = report_p.profile
 
                 annotated_p = render_full_analysis(
                     st.session_state.profile_img,
                     st.session_state.landmarks_profile,
-                    report_p,
+                    overlay_p,
                     layers=layers_p,
                 )
 
@@ -725,79 +803,243 @@ with tab_results:
 # TAB 5: Simulación
 # ══════════════════════════════════════════════════════════════════════════════
 
+def apply_preset(values: dict[str, float]) -> None:
+    for pid, value in default_values().items():
+        st.session_state[f"sim_{pid}"] = values.get(pid, value)
+
+
+def current_sim_values() -> dict[str, float]:
+    return {pid: float(st.session_state[f"sim_{pid}"]) for pid in default_values()}
+
+
 with tab_simulation:
     st.markdown("### Simulación Visual — Antes / Después")
 
-    if "frontal_img" not in st.session_state or st.session_state.landmarks_frontal is None:
-        st.info(
-            "ℹ️ Cargá una imagen frontal y ejecutá el análisis primero."
-        )
+    if st.session_state.calibration is None or st.session_state.landmarks_frontal is None:
+        st.info("ℹ️ Cargá una imagen frontal, calibrá la escala y ejecutá el análisis primero.")
     else:
-        landmarks = st.session_state.landmarks_frontal
-        original = st.session_state.frontal_img
+        calibration = st.session_state.calibration
 
-        st.markdown("#### Controles de Simulación")
+        # ── Foto base ────────────────────────────────────────────────────
+        base_options = ["Frontal en reposo"]
+        if "smile_img" in st.session_state:
+            base_options.append("Frontal en sonrisa")
+        base_choice = st.radio("Foto base", base_options, horizontal=True)
+        image_kind = "smile" if base_choice == "Frontal en sonrisa" else "rest"
 
-        sim_region = st.selectbox(
-            "Zona a modificar",
-            ["Nariz (Rinoplastia)", "Mentón (Mentoplastia)", "Labios (Queiloplastia)"],
-        )
-
-        col_s1, col_s2 = st.columns(2)
-
-        warp_points = []
-
-        if "Nariz" in sim_region:
-            with col_s1:
-                nose_dx = st.slider("Nariz — Desplazamiento Horizontal (px)", -30, 30, 0)
-                nose_dy = st.slider("Nariz — Desplazamiento Vertical (px)", -20, 20, 0)
-            with col_s2:
-                nose_scale = st.slider("Nariz — Escala", 0.7, 1.3, 1.0, 0.05)
-
-            warp_points = generate_nose_warp_points(landmarks, nose_dx, nose_dy, nose_scale)
-
-        elif "Mentón" in sim_region:
-            with col_s1:
-                chin_dx = st.slider("Mentón — Avance/Retroceso (px)", -30, 30, 0)
-            with col_s2:
-                chin_dy = st.slider("Mentón — Alargamiento/Acortamiento (px)", -20, 20, 0)
-
-            warp_points = generate_chin_warp_points(landmarks, chin_dx, chin_dy)
-
-        elif "Labios" in sim_region:
-            with col_s1:
-                lip_upper = st.slider("Labio Superior — Volumen (px)", -15, 15, 0)
-                lip_lower = st.slider("Labio Inferior — Volumen (px)", -15, 15, 0)
-            with col_s2:
-                lip_width = st.slider("Comisuras — Escala", 0.85, 1.15, 1.0, 0.01)
-
-            warp_points = generate_lips_warp_points(
-                landmarks, -lip_upper, lip_lower, lip_width
-            )
-
-        # Aplicar warp
-        if warp_points and any(
-            wp.original != wp.displaced for wp in warp_points
-        ):
-            with st.spinner("Aplicando deformación..."):
-                warper = MeshWarper(SimulationConfig(smoothness=30.0))
-                simulated = warper.warp(original, warp_points)
-
-            # Side-by-side
-            comparison = render_comparison(original, simulated, "Antes", "Después")
-            st.image(
-                img_to_rgb(comparison),
-                caption="Comparación Antes / Después",
-                use_container_width=True,
-            )
-
-            st.session_state.simulated_img = simulated
+        if image_kind == "smile":
+            sim_image = st.session_state.smile_img
+            digest = image_digest(sim_image)
+            if st.session_state.get("landmarks_smile_digest") != digest:
+                with st.spinner("Detectando landmarks en la sonrisa..."):
+                    st.session_state.landmarks_smile = st.session_state.detector.detect(sim_image)
+                    st.session_state.landmarks_smile_digest = digest
+            sim_landmarks = st.session_state.landmarks_smile
         else:
-            st.image(
-                img_to_rgb(original),
-                caption="Imagen original — Mové los sliders para simular",
-                use_container_width=True,
+            sim_image = st.session_state.frontal_img
+            sim_landmarks = st.session_state.landmarks_frontal
+
+        if sim_landmarks is None:
+            st.error("❌ No se detectó un rostro en la foto seleccionada.")
+        else:
+            # ── Presets ──────────────────────────────────────────────────
+            col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
+            with col_p1:
+                preset = st.selectbox(
+                    "Preset de tratamiento",
+                    PRESETS,
+                    format_func=lambda p: f"{p.name} — {p.description}",
+                )
+            with col_p2:
+                st.button("Aplicar preset", on_click=apply_preset, args=(preset.values,),
+                          use_container_width=True)
+            with col_p3:
+                st.button("Reiniciar", on_click=apply_preset, args=({},),
+                          use_container_width=True)
+
+            # ── Parámetros en mm / grados ────────────────────────────────
+            col_controls, col_view = st.columns([1, 2])
+
+            with col_controls:
+                st.caption(f"Escala: {calibration.pixel_per_mm:.2f} px/mm ({calibration.method})")
+                for proc in PROCEDURES:
+                    if proc.image == "smile" and image_kind != "smile":
+                        continue
+                    active = any(
+                        st.session_state[f"sim_{param_id(proc, par)}"] != 0 for par in proc.parameters
+                    )
+                    with st.expander(proc.name, expanded=active):
+                        if proc.note:
+                            st.caption(proc.note)
+                        for par in proc.parameters:
+                            st.slider(
+                                f"{par.label} ({par.unit})",
+                                min_value=par.min_value,
+                                max_value=par.max_value,
+                                step=par.step,
+                                key=f"sim_{param_id(proc, par)}",
+                                help=par.help or None,
+                            )
+
+                dental_choice: list[str] = []
+                if image_kind == "smile":
+                    with st.expander("Dental (solo con IA)"):
+                        dental_choice = st.multiselect(
+                            "Cambios dentales",
+                            [opt.key for opt in DENTAL_OPTIONS],
+                            format_func=lambda k: next(o.label for o in DENTAL_OPTIONS if o.key == k),
+                            help="No son geométricos: se aplican en el refinado con IA.",
+                        )
+
+            values = current_sim_values()
+            outcome = run_simulation(sim_image, sim_landmarks, calibration, values, image_kind)
+            changes = active_changes(values)
+
+            with col_view:
+                col_before, col_after = st.columns(2)
+                with col_before:
+                    st.image(img_to_rgb(sim_image), caption="Antes", use_container_width=True)
+                with col_after:
+                    st.image(img_to_rgb(outcome.image), caption="Después (simulación geométrica)",
+                             use_container_width=True)
+
+                if outcome.applied_fraction < 0.999:
+                    st.warning(
+                        f"⚠️ Los valores superan lo que la foto admite sin plegar la imagen: "
+                        f"se aplicó el {outcome.applied_fraction:.0%} del cambio. "
+                        "Una foto de mayor resolución permite cambios mayores."
+                    )
+
+                changed = [d for d in outcome.deltas if abs(d.delta) >= 0.1]
+                if changed:
+                    st.markdown("##### 📏 Re-medición")
+                    st.dataframe(
+                        {
+                            "Medida": [d.name for d in changed],
+                            "Antes (mm)": [f"{d.before:.1f}" for d in changed],
+                            "Después (mm)": [f"{d.after:.1f}" for d in changed],
+                            "Δ (mm)": [f"{d.delta:+.1f}" for d in changed],
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    st.caption(
+                        "Las proyecciones de perfil se estiman con la profundidad de la malla 3D: "
+                        "el valor absoluto es aproximado, la diferencia refleja el cambio simulado."
+                    )
+
+            # ── Visor 3D ─────────────────────────────────────────────────
+            st.divider()
+            st.markdown("#### 🧊 Visor 3D")
+            st.caption(
+                "Rotá con el mouse. Los cambios de proyección (mentón, dorso, pómulos, "
+                "ojeras) se aprecian en 3/4 y perfil."
             )
+            depth_scale = st.slider("Profundidad de la malla", 0.5, 2.0, 1.0, 0.1)
+            st.iframe(
+                build_viewer_html(outcome.mesh_before, outcome.mesh_after, sim_image,
+                                  height=520, depth_scale=depth_scale),
+                height=530,
+            )
+
+            # ── Refinado con IA ──────────────────────────────────────────
+            st.divider()
+            st.markdown("#### ✨ Refinado fotorrealista con IA")
+            ai_changes = describe_for_ai(values, dental_choice)
+            request_key = json.dumps(
+                [image_kind, image_digest(sim_image), values, dental_choice, openrouter_model],
+                sort_keys=True,
+            )
+
+            consent = st.checkbox(
+                "El paciente firmó el consentimiento para procesar su foto con un servicio "
+                "externo de IA (OpenRouter y el proveedor del modelo).",
+                key="sim_ai_consent",
+            )
+            with st.expander("Ver prompt"):
+                st.code(build_prompt(ai_changes), language="text")
+
+            can_refine = bool(openrouter_key) and consent and bool(ai_changes)
+            if not openrouter_key:
+                st.caption("Ingresá la API key de OpenRouter en la barra lateral.")
+            elif not ai_changes:
+                st.caption("Configurá al menos un cambio para refinar.")
+
+            if st.button("✨ Refinar con IA", type="primary", disabled=not can_refine):
+                with st.spinner(f"Generando con {openrouter_model}..."):
+                    try:
+                        backend = OpenRouterBackend(api_key=openrouter_key, model=openrouter_model)
+                        ai_image = backend.refine(sim_image, outcome.image, build_prompt(ai_changes))
+                        detected = st.session_state.detector.detect(ai_image)
+                        verification = verify_geometry(
+                            FaceMesh3D.from_landmarks(detected) if detected else None,
+                            outcome.mesh_after,
+                            calibration.pixel_per_mm,
+                        )
+                        st.session_state.sim_ai = {
+                            "key": request_key,
+                            "image": ai_image,
+                            "model": openrouter_model,
+                            "verification": verification,
+                        }
+                    except RefineError as e:
+                        st.error(f"❌ {e}")
+
+            sim_ai = st.session_state.sim_ai
+            ai_current = sim_ai is not None and sim_ai["key"] == request_key
+            if sim_ai is not None and not ai_current:
+                st.info("ℹ️ Cambiaste la simulación: el resultado de IA anterior ya no corresponde.")
+
+            if ai_current:
+                col_a1, col_a2, col_a3 = st.columns(3)
+                with col_a1:
+                    st.image(img_to_rgb(sim_image), caption="Antes", use_container_width=True)
+                with col_a2:
+                    st.image(img_to_rgb(outcome.image), caption="Simulación geométrica",
+                             use_container_width=True)
+                with col_a3:
+                    st.image(img_to_rgb(sim_ai["image"]), caption=f"IA — {sim_ai['model']}",
+                             use_container_width=True)
+
+                v = sim_ai["verification"]
+                if not v.face_detected:
+                    st.error("❌ No se detectó el rostro en la imagen generada. No es confiable.")
+                elif v.passed:
+                    st.success(
+                        f"✅ La imagen de IA respeta la geometría simulada "
+                        f"(error medio {v.mean_error_mm:.2f} mm, máx. {v.max_error_mm:.1f} mm)."
+                    )
+                else:
+                    st.warning(
+                        f"⚠️ La IA se apartó de la geometría simulada (error medio "
+                        f"{v.mean_error_mm:.2f} mm, máx. {v.max_error_mm:.1f} mm). "
+                        "Reintentá o usá la simulación geométrica."
+                    )
+
+            # ── Resultado para el reporte ────────────────────────────────
+            if changes or dental_choice:
+                final_options = ["Simulación geométrica"]
+                if ai_current:
+                    final_options.append("Refinado con IA")
+                final_choice = st.radio("Imagen final para el reporte", final_options, horizontal=True)
+                use_ai = final_choice == "Refinado con IA"
+
+                st.session_state.simulation_report = {
+                    "before": sim_image,
+                    "after": sim_ai["image"] if use_ai else outcome.image,
+                    "source": f"IA ({sim_ai['model']})" if use_ai else "Simulación geométrica",
+                    "changes": [
+                        (proc.name, par.label, value, par.unit) for proc, par, value in changes
+                    ] + [
+                        ("Dental (IA)", opt.label, None, "")
+                        for opt in DENTAL_OPTIONS if use_ai and opt.key in dental_choice
+                    ],
+                    "deltas": [
+                        (d.name, d.before, d.after) for d in outcome.deltas if abs(d.delta) >= 0.1
+                    ],
+                }
+            else:
+                st.session_state.simulation_report = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -864,6 +1106,7 @@ with tab_report:
                     doctor_name=doctor_name or "Profesional",
                     clinic_name=clinic_name,
                     notes=notes,
+                    simulation=st.session_state.simulation_report,
                 )
 
             st.success("✅ Reporte PDF generado exitosamente.")

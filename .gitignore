@@ -1,0 +1,12 @@
+# Entorno
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secretos (API keys)
+.env
+.streamlit/secrets.toml

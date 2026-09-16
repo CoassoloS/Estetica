@@ -373,8 +373,8 @@ class FaceLandmarkDetector:
             raw_landmarks=raw_landmarks,
             image_width=w,
             image_height=h,
-            detection_confidence=min_detection_confidence
-            if (min_detection_confidence := 0.5) else 0.5,
+            # MediaPipe no expone un score por rostro: se registra el umbral usado
+            detection_confidence=self._min_detection_confidence,
             estimated_points=estimated,
         )
 

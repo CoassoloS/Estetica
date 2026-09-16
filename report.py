@@ -6,6 +6,7 @@ Genera un PDF estructurado con:
     - Imágenes anotadas (frontal y perfil)
     - Tabla de mediciones con rangos normales
     - Alertas clínicas con semáforo de severidad
+    - Simulación antes/después (opcional)
     - Disclaimer médico
 
 Usa ReportLab para el renderizado del PDF.
@@ -41,6 +42,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from drawer import render_comparison
 from measurements import (
     AlertSeverity,
     ClinicalAlert,
@@ -202,9 +204,15 @@ class ReportGenerator:
         doctor_name: str = "Profesional",
         clinic_name: str = "FacialMetrics Pro",
         notes: str = "",
+        simulation: Optional[dict] = None,
     ) -> bytes:
         """
         Generar reporte PDF completo.
+
+        Args:
+            simulation: Opcional. {"before", "after" (imágenes BGR), "source" (str),
+                "changes": [(procedimiento, parámetro, valor | None, unidad)],
+                "deltas": [(medida, antes_mm, después_mm)]}.
 
         Returns:
             Bytes del PDF generado.
@@ -243,6 +251,10 @@ class ReportGenerator:
 
         # === ALERTAS CLÍNICAS ===
         elements.extend(self._build_alerts_section(report))
+
+        # === SIMULACIÓN ===
+        if simulation:
+            elements.extend(self._build_simulation_section(simulation))
 
         # === NOTAS ===
         if notes:
@@ -495,6 +507,58 @@ class ReportGenerator:
         elements.append(Spacer(1, 5 * mm))
         return elements
 
+    def _build_simulation_section(self, simulation: dict) -> list:
+        """Construir sección de simulación antes/después."""
+        elements = [
+            PageBreak(),
+            Paragraph("Simulación Estética — Antes / Después", self.styles["subtitle"]),
+            _cv2_to_reportlab_image(
+                render_comparison(simulation["before"], simulation["after"], "Antes", "Despues")
+            ),
+            Spacer(1, 2 * mm),
+            Paragraph(f"Origen de la imagen simulada: {simulation['source']}", self.styles["small"]),
+            Spacer(1, 4 * mm),
+        ]
+
+        data = [["Procedimiento", "Parámetro", "Valor"]]
+        for procedure, parameter, value, unit in simulation["changes"]:
+            data.append([procedure, parameter, "—" if value is None else f"{value:+g} {unit}"])
+
+        if simulation["deltas"]:
+            data.append(["MEDICIONES SIMULADAS", "", ""])
+            data.append(["Medida", "Antes → Después", "Δ"])
+            for name, before, after in simulation["deltas"]:
+                data.append([name, f"{before:.1f} → {after:.1f} mm", f"{after - before:+.1f} mm"])
+
+        table = Table(data, colWidths=[65 * mm, 60 * mm, 30 * mm])
+        style_commands = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1565c0")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+        ]
+        for i, row in enumerate(data):
+            if row[0] == "MEDICIONES SIMULADAS":
+                style_commands += [
+                    ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#e3f2fd")),
+                    ("FONTNAME", (0, i), (0, i), "Helvetica-Bold"),
+                    ("SPAN", (0, i), (-1, i)),
+                    ("FONTNAME", (0, i + 1), (-1, i + 1), "Helvetica-Bold"),
+                ]
+        table.setStyle(TableStyle(style_commands))
+        elements.append(table)
+        elements.append(Spacer(1, 3 * mm))
+        elements.append(Paragraph(
+            "La simulación es orientativa y no garantiza el resultado del tratamiento. "
+            "Las imágenes refinadas con IA son una representación artística basada en "
+            "la simulación geométrica.",
+            self.styles["disclaimer"],
+        ))
+        elements.append(Spacer(1, 6 * mm))
+        return elements
+
     def _build_disclaimer(self) -> list:
         """Construir sección de disclaimer legal."""
         elements = []
@@ -544,6 +608,7 @@ def generate_pdf_report(
     doctor_name: str = "Profesional",
     clinic_name: str = "FacialMetrics Pro",
     notes: str = "",
+    simulation: Optional[dict] = None,
 ) -> bytes:
     """
     Función de conveniencia para generar el PDF en un solo paso.
@@ -561,4 +626,5 @@ def generate_pdf_report(
         doctor_name=doctor_name,
         clinic_name=clinic_name,
         notes=notes,
+        simulation=simulation,
     )

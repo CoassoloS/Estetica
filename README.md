@@ -10,7 +10,7 @@ El sistema procesa fotos médicas estandarizadas (frontal en reposo, frontal en 
 - **Calibrar escala** píxeles → milímetros (manual con regla, o automático por distancia intercantal)
 - **Calcular proporciones faciales**: Ley de Tercios, Ley de Quintos, Línea Media, Análisis de Perfil
 - **Emitir diagnósticos preliminares** con motor de reglas clínicas (alertas de asimetría, sonrisa gingival, etc.)
-- **Simular resultados estéticos** con deformación Thin Plate Splines (rinoplastia, mentoplastia, queiloplastia)
+- **Simular resultados estéticos** en mm sobre la malla 3D de MediaPipe (nariz, labios, mentón, mandíbula, rellenos, sonrisa gingival), con re-medición, visor 3D y refinado fotorrealista opcional con IA vía OpenRouter
 - **Generar reportes PDF** profesionales con imágenes anotadas, tablas de mediciones y alertas clínicas
 
 ## Stack Tecnológico
@@ -18,7 +18,9 @@ El sistema procesa fotos médicas estandarizadas (frontal en reposo, frontal en 
 | Componente | Tecnología |
 |:---|:---|
 | Procesamiento de imagen | OpenCV, MediaPipe, NumPy, Pillow |
-| Cálculos científicos | SciPy (RBF/TPS) |
+| Cálculos científicos | SciPy (Delaunay) |
+| Visor 3D | three.js (CDN) |
+| IA generativa (opcional) | OpenRouter (modelos de imagen) |
 | Frontend | Streamlit |
 | Reportes PDF | ReportLab |
 | Lenguaje | Python 3.10+ |
@@ -32,7 +34,13 @@ Estetica/
 ├── measurements.py        # Calibración + Cálculos + Motor de Reglas
 ├── drawer.py              # Renderizado de overlays clínicos
 ├── report.py              # Generación de PDF con ReportLab
-├── simulation.py          # Simulación visual (TPS warp + stub Inpainting)
+├── simulation/            # Simulación antes/después
+│   ├── mesh.py            #   Malla 3D (478 landmarks + teselación)
+│   ├── procedures.py      #   Procedimientos y presets en mm / grados
+│   ├── warp.py            #   Warp piecewise-affine de la foto
+│   ├── pipeline.py        #   Simulación + re-medición
+│   ├── viewer3d.py        #   Visor 3D antes/después (three.js)
+│   └── ai_refine.py       #   Refinado con IA (OpenRouter) + verificación
 ├── requirements.txt       # Dependencias
 ├── README.md              # Este archivo
 └── tests/
@@ -64,7 +72,17 @@ streamlit run app.py
 
 La aplicación se abrirá en `http://localhost:8501`.
 
-### 4. Ejecutar tests
+### 4. (Opcional) Configurar OpenRouter
+
+Para el refinado fotorrealista, definí la API key de una de estas formas
+(o pegala en la barra lateral de la app, solo para la sesión):
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+# o en .streamlit/secrets.toml:  OPENROUTER_API_KEY = "sk-or-..."
+```
+
+### 5. Ejecutar tests
 
 ```bash
 pip install pytest
@@ -79,7 +97,7 @@ python -m pytest tests/ -v
 2. **📐 Calibración**: Calibrar escala automáticamente (distancia intercantal ~32mm) o manualmente (con regla visible en la foto).
 3. **🔬 Análisis Facial**: Visualizar landmarks detectados y activar/desactivar capas de overlay (tercios, quintos, línea media).
 4. **📊 Resultados**: Ver tabla de mediciones, alertas clínicas con semáforo (🟢🟡🔴) y exportar JSON de métricas.
-5. **🔄 Simulación**: Simular cambios estéticos (rinoplastia, mentoplastia, queiloplastia) con sliders interactivos.
+5. **🔄 Simulación**: Elegir un preset o ajustar parámetros en mm/grados; ver antes/después, la re-medición y el visor 3D (frente, 3/4, perfil). Opcionalmente refinar con IA (requiere consentimiento del paciente y API key de OpenRouter).
 6. **📄 Reporte**: Generar y descargar PDF profesional con imágenes anotadas, mediciones y alertas.
 
 ### Puntos Anatómicos Detectados
