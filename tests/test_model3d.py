@@ -108,6 +108,7 @@ class TestGenerate:
         payload = req.call_args_list[0].kwargs["json"]
         assert len(payload["image_urls"]) == 2
         assert payload["geometry_file_format"] == "glb" and payload["material"] == "PBR"
+        assert payload["tier"] == "Gen-2.5-High"
         assert get.call_args.args[0] == "https://fal.media/files/r.glb"
 
     def test_hunyuan_pro_uses_only_frontal(self, tmp_path):

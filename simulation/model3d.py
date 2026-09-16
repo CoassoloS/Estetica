@@ -63,7 +63,7 @@ class FalModel:
         if self.key == "rodin":
             return self.endpoint, {
                 "image_urls": urls,
-                "tier": "High",
+                "tier": "Gen-2.5-High",
                 "material": "PBR",
                 "geometry_file_format": "glb",
             }
