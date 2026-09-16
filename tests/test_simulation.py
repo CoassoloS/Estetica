@@ -213,4 +213,21 @@ class TestViewer:
         html = build_viewer_html(mesh, mesh, make_texture_image())
         assert '<meta charset="utf-8">' in html
         assert "__DATA__" not in html and "__THREE__" not in html
-        assert "data:image/jpeg;base64," in html
+        assert "data:image/png;base64," in html
+
+    def test_backdrop_is_transparent_but_face_is_not(self, mesh):
+        from simulation.viewer3d import backdrop_alpha
+
+        image = np.full((500, 400, 3), 245, dtype=np.uint8)     # Fondo clínico claro
+        image[100:450, 80:320] = (90, 120, 170)                 # Persona
+        image[280:290, 180:220] = 250                           # Dientes (claros, dentro del rostro)
+        alpha = backdrop_alpha(image, mesh)
+        assert alpha[10, 10] == 0
+        assert alpha[250, 200] == 255
+        assert alpha[285, 200] == 255
+
+    def test_textured_background_is_kept(self, mesh):
+        from simulation.viewer3d import backdrop_alpha
+
+        alpha = backdrop_alpha(make_texture_image(), mesh)
+        assert alpha.min() == 255

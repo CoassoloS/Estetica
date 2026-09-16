@@ -932,8 +932,8 @@ with tab_simulation:
             st.divider()
             st.markdown("#### 🧊 Visor 3D")
             st.caption(
-                "Rotá con el mouse. Los cambios de proyección (mentón, dorso, pómulos, "
-                "ojeras) se aprecian en 3/4 y perfil."
+                "Girá el rostro con el mouse (hasta ±40°). Los cambios de proyección "
+                "(mentón, dorso, pómulos, ojeras) se aprecian al girarlo."
             )
             depth_scale = st.slider("Profundidad de la malla", 0.5, 2.0, 1.0, 0.1)
             st.iframe(
